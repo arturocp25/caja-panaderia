@@ -282,6 +282,7 @@ table.tbl th{font-size:13px;color:var(--ink-2);font-weight:650;border-top:0}
 .detail dd{margin:0;font-weight:650;text-align:right}
 .big-amt{font-size:44px;font-weight:850;font-stretch:72%;margin:2px 0 10px}
 .notice{padding:12px 14px;border-radius:12px;background:var(--surface-2);font-size:15px;margin:8px 0}
+.novedad{margin:6px 0 4px;padding-left:22px;display:grid;gap:12px;font-size:17px;line-height:1.4}
 .notice.warn{background:var(--warn-bg);color:var(--warn)}
 .notice.err{background:var(--danger-bg);color:var(--danger)}
 .notice.ok{background:var(--ok-bg);color:var(--ok)}
@@ -331,7 +332,7 @@ body.no-paybar #toast{bottom:calc(80px + env(safe-area-inset-bottom))}
 dl.kv{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 0;margin:0 0 12px;align-items:baseline}
 dl.kv dt{color:var(--ink-2)}
 dl.kv dd{margin:0;padding-left:12px;text-align:right;font-weight:750;font-variant-numeric:tabular-nums}
-dl.kv dd small{display:block;font-weight:500;font-size:13px;color:var(--muted)}
+dl.kv dd small,dl.kv dt small{display:block;font-weight:500;font-size:13px;color:var(--muted)}
 dl.kv dd.big{font-size:26px;font-weight:850;font-stretch:76%}
 dl.kv dd.ok{color:var(--ok)} dl.kv dd.bad{color:var(--danger)}
 dl.kv .tot{border-top:2px solid var(--ink);padding-top:8px;color:var(--ink);font-weight:800}
@@ -412,7 +413,7 @@ dl.kv .tot{border-top:2px solid var(--ink);padding-top:8px;color:var(--ink);font
 <script>
 (function () {
 'use strict';
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 const VISTA_PREVIA = (() => { try { return window.top !== window.self || /claude/.test(location.hostname); } catch (e) { return true; } })();
 
 /* ================================================================
@@ -827,11 +828,23 @@ function resumen(d1, d2) {
 
 /* Caja del día */
 const cajaDe = (dia, momento) => Store.get('caja-' + dia + '-' + momento);
+/* Efectivo neto anotado en un día hasta un momento (ventas y cobros entran, gastos y retiros salen). */
+function efectivoHasta(dia, fecha) {
+  let n = 0;
+  const lim = Date.parse(fecha);
+  const antes = r => !r.anulada && r.dia === dia && r.fecha && Date.parse(r.fecha) <= lim && r.metodo === 'efectivo';
+  Store.list('venta').forEach(v => { if (antes(v)) n += n0(v.total); });
+  Store.list('cobro').forEach(c => { if (antes(c)) n += n0(c.monto); });
+  Store.list('gasto').forEach(g => { if (antes(g)) n -= n0(g.monto); });
+  return n;
+}
 function cuentaCaja(dia) {
   const R = resumen(dia, dia), ap = cajaDe(dia, 'apertura');
   const abrio = ap ? n0(ap.contado) : 0;
-  return { abrio, hayApertura: !!ap, ventasEf: R.efectivo, cobrosEf: R.cobrosEf, gastosEf: R.gastosEf, retirosEf: R.retirosEf,
-    esperado: abrio + R.efectivo + R.cobrosEf - R.gastosEf - R.retirosEf };
+  // Si la apertura se contó con el día ya empezado, ese dinero ya estaba en la caja: no se suma dos veces.
+  const antes = ap && ap.alMomento && ap.fecha ? efectivoHasta(dia, String(ap.fecha)) : 0;
+  return { abrio, hayApertura: !!ap, ventasEf: R.efectivo, cobrosEf: R.cobrosEf, gastosEf: R.gastosEf, retirosEf: R.retirosEf, antes,
+    esperado: abrio + R.efectivo + R.cobrosEf - R.gastosEf - R.retirosEf - antes };
 }
 function sugerenciaApertura(dia) {
   const prev = Store.list('caja').filter(c => c.momento === 'cierre' && c.dia < dia && c.deja != null).sort((a, b) => b.dia.localeCompare(a.dia))[0];
@@ -979,7 +992,7 @@ function VVenta() {
 
   let h = '';
   const ap = cajaDe(hoy(), 'apertura'), ci = cajaDe(hoy(), 'cierre');
-  if (!ap) h += '<div class="banner"><div class="grow"><b>La caja no se ha abierto hoy</b><span>Cuenta el efectivo con que empiezas.</span></div><button class="btn ink sm" data-a="abrirCaja" data-d="' + hoy() + '">Abrir caja</button></div>';
+  if (!ap) h += '<div class="banner"><div class="grow"><b>La caja no se ha abierto hoy</b><span>Hay que abrirla antes de la primera venta.</span></div><button class="btn ink sm" data-a="abrirCaja" data-d="' + hoy() + '">Abrir caja</button></div>';
   else if (ci) h += '<div class="banner calm"><div class="grow"><b>La caja se cerró a las ' + esc(ci.hora) + '</b><span>Lo que vendas ahora no entra en ese conteo. Puedes volver a contar en Hoy.</span></div></div>';
 
   h += '<div class="venta"><div>';
@@ -1500,13 +1513,24 @@ function filaDen(d, tipo) {
     '<input inputmode="numeric" data-den="' + d + '" placeholder="0" aria-label="Cantidad de ' + (tipo === 'bill' ? 'billetes' : 'monedas') + ' de ' + d + '">' +
     '<button type="button" data-a="denMas" data-v="' + d + '" aria-label="Uno más">+</button></div><span class="den-sub" data-sub="' + d + '">RD$0</span></div>';
 }
-function formConteo(momento, dia) {
+function formConteo(momento, dia, op) {
+  op = op || {};
   const previo = cajaDe(dia, momento);
   const sug = momento === 'apertura' ? sugerenciaApertura(dia) : null;
-  let h = head(momento === 'apertura' ? 'Abrir la caja' : 'Cerrar la caja',
-    (dia === hoy() ? '' : esc(dayLabel(dia)) + '. ') + (momento === 'apertura' ? 'Cuenta el efectivo con que empieza el día.' : 'Cuenta todo el efectivo que hay en la caja.'));
+  const sub = momento !== 'apertura' ? 'Cuenta todo el efectivo que hay en la caja.'
+    : op.antesDeVender ? 'Antes de la primera venta de hoy, cuenta el efectivo con que empieza la caja.'
+    : 'Cuenta el efectivo con que empieza el día.';
+  let h = head(momento === 'apertura' ? 'Abrir la caja' : 'Cerrar la caja', (dia === hoy() ? '' : esc(dayLabel(dia)) + '. ') + sub);
   if (previo) h += '<div class="notice">Ya se contó a las ' + esc(previo.hora) + ' (' + esc(previo.cajeroNombre) + '): ' + money(previo.contado) + '. Si cuentas de nuevo, se reemplaza.</div>';
+  if (op.otro) h += '<div class="notice warn"><span>Este equipo no pudo revisar la hoja. Si alguien ya abrió la caja hoy en otro teléfono, no la vuelvas a abrir aquí.</span><button class="btn line sm" data-a="aperturaOtro" style="margin-top:8px">Ya la abrió otro teléfono</button></div>';
   if (sug && !previo) h += '<div class="notice ok sug"><span>' + (sug.dia === addDays(dia, -1) ? 'Ayer' : cap(fechaLarga(sug.dia))) + ' se dejaron <b>' + money(sug.monto) + '</b> en la caja.</span><button class="btn go sm" data-a="aperturaIgual" data-d="' + dia + '">Hay lo mismo</button></div>';
+  // Apertura con el día ya empezado: preguntar si el conteo ya incluye lo vendido.
+  const yaHay = momento === 'apertura' && dia === hoy() ? efectivoHasta(dia, new Date().toISOString()) : 0;
+  if (yaHay) {
+    h += '<div class="notice warn">Hoy ya se anotaron <b>' + money(yaHay) + '</b> en efectivo. ¿Qué vas a contar?</div>' +
+      seg('aperturaTipo', [['ahora', 'Lo que hay ahora en la caja'], ['inicio', 'Lo que había al empezar el día']], 'ahora') +
+      '<p class="hint">Si cuentas lo que hay ahora, ese dinero ya está dentro y la app no lo suma otra vez.</p>';
+  }
   h += seg('modoConteo', [['den', 'Billetes y monedas'], ['total', 'Solo el total']], 'den');
   h += '<div id="cnt-den"><div class="f-t den-t">Billetes</div>' + BILLETES.map(d => filaDen(d, 'bill')).join('') +
     '<div class="f-t den-t">Monedas</div>' + MONEDAS.map(d => filaDen(d, 'coin')).join('') + '</div>';
@@ -1542,6 +1566,7 @@ function cuentasHtml(x) {
     '<dt>Pagos de fiado en efectivo</dt><dd>+ ' + money(x.cobrosEf) + '</dd>' +
     '<dt>Gastos pagados de la caja</dt><dd>− ' + money(x.gastosEf) + '</dd>' +
     '<dt>Retiros de caja</dt><dd>− ' + money(x.retirosEf) + '</dd>' +
+    (n0(x.antes) ? '<dt>Ya estaba en la caja al abrir<small>anotado antes de contar la apertura</small></dt><dd>' + (n0(x.antes) > 0 ? '− ' : '+ ') + money(Math.abs(n0(x.antes))) + '</dd>' : '') +
     '<dt class="tot">Debería haber</dt><dd class="tot">' + money(x.esperado) + '</dd>' +
     (x.contado != null ? '<dt>Contado</dt><dd>' + money(x.contado) + '</dd><dt>Diferencia</dt><dd class="' + (dif === 0 ? 'ok' : 'bad') + '">' + (dif === 0 ? 'Cuadra' : dif < 0 ? 'Faltan ' + money(-dif) : 'Sobran ' + money(dif)) + '</dd>' : '') +
     '</dl>';
@@ -1555,7 +1580,7 @@ function resultadoCierre(r) {
   h += cuentasHtml(Object.assign({}, r, { ventasEf: r.ventasEf, cobrosEf: r.cobrosEf, gastosEf: r.gastosEf, retirosEf: r.retirosEf }));
   if (dif !== 0) h += '<p class="hint">Revisa si falta anotar algún gasto, un pago de fiado o una venta. Puedes volver a contar cuando quieras.</p>';
   const opciones = [];
-  if (ap && n0(ap.contado) > 0 && n0(ap.contado) <= n0(r.contado)) opciones.push([n0(ap.contado), 'Lo mismo que hoy: ' + money(ap.contado)]);
+  if (ap && !ap.alMomento && n0(ap.contado) > 0 && n0(ap.contado) <= n0(r.contado)) opciones.push([n0(ap.contado), 'Lo mismo que hoy: ' + money(ap.contado)]);
   opciones.push([0, 'Nada'], [n0(r.contado), 'Todo: ' + money(r.contado)]);
   h += '<div class="f-t" style="margin-top:18px">¿Cuánto se deja en la caja para mañana?</div><div class="chips wrap" id="deja-chips">' +
     opciones.map(([v, t]) => '<button class="chip sm" data-a="dejaPick" data-v="' + v + '">' + esc(t) + '</button>').join('') +
@@ -1588,7 +1613,7 @@ function verCaja(dia) {
    ================================================================ */
 const A = {
   ir(d) { ui.screen = d.s; if (d.s === 'hoy') ui.dia = hoy(); render(); window.scrollTo(0, 0); },
-  cerrar() { Sheet.close(); },
+  cerrar() { ui.ventaPendiente = false; Sheet.close(); },
   estado() {
     const e = estadoSync();
     if (Store.meta.demo) return toast('Modo de prueba: nada se guarda en la hoja.');
@@ -1621,7 +1646,7 @@ const A = {
   /* cajero */
   entrar(d) {
     const e = Store.get(d.id);
-    const ok = () => { ui.user = e.id; Store.meta.ultimoCajero = e.id; Store.saveMeta(); ui.screen = 'venta'; render(); };
+    const ok = () => { ui.user = e.id; Store.meta.ultimoCajero = e.id; Store.saveMeta(); ui.screen = 'venta'; render(); avisoNovedad(); };
     if (e.pin) KP.open({ title: 'PIN de ' + e.nombre, kind: 'pin', ok: 'Entrar', onOk: v => (v === String(e.pin) ? ok() : toast('PIN incorrecto')) });
     else ok();
   },
@@ -1675,6 +1700,8 @@ const A = {
     const esCambio = ui.metodo === 'danado';
     if (!esCambio && lineas.some(l => !l.pr)) return toast('Falta el precio de algún producto.');
     if (ui.metodo === 'fiado' && !cli) return toast('El fiado necesita un comprador fijo.');
+    // La primera venta del día no se guarda hasta abrir la caja.
+    if (!esCambio && !cajaDe(hoy(), 'apertura') && Store.meta.aperturaOtro !== hoy()) return pedirApertura();
     const ahora = new Date();
     const items = lineas.map(l => ({ p: l.p.id, n: l.p.nombre, f: l.f, q: l.q, pr: l.pr }));
     const cant = cuentaItems(items);
@@ -1723,7 +1750,24 @@ const A = {
   },
 
   /* caja */
-  abrirCaja(d) { formConteo('apertura', d.d || hoy()); },
+  async abrirCaja(d) {
+    const dia = d.d || hoy();
+    // Antes de abrir hoy, mirar si otro teléfono ya la abrió.
+    if (dia === hoy() && !cajaDe(dia, 'apertura') && Sync.configurado() && navigator.onLine) await syncCorto(6000);
+    formConteo('apertura', dia);
+  },
+  async novedadVista() {
+    const u = yo();
+    Store.meta.avisos = Object.assign({}, Store.meta.avisos, { [NOVEDAD.id + ':' + (u ? u.id : '')]: true });
+    await Store.saveMeta();
+    Sheet.close();
+  },
+  async aperturaOtro() {
+    Store.meta.aperturaOtro = hoy(); await Store.saveMeta();
+    const seguir = ui.ventaPendiente; ui.ventaPendiente = false;
+    Sheet.close();
+    if (seguir) await A.guardarVenta();
+  },
   cerrarCaja(d) { formConteo('cierre', d.d || hoy()); },
   verCaja(d) { verCaja(d.d || hoy()); },
   denMas(d) { const i = $('#sheet-root [data-den="' + d.v + '"]'); i.value = Math.max(0, Math.floor(n0(i.value))) + 1; sumarConteo(); },
@@ -1734,12 +1778,12 @@ const A = {
   },
   async guardarConteo(d) {
     const { contado, conteo } = leerConteo();
-    if (d.m === 'apertura') return guardarCaja('apertura', d.d, contado, conteo);
+    if (d.m === 'apertura') return guardarCaja('apertura', d.d, contado, conteo, segVal('aperturaTipo') === 'ahora');
     const u = yo(), ahora = new Date(), c = cuentaCaja(d.d);
     const r = await Store.save('caja', {
       id: 'caja-' + d.d + '-cierre', dia: d.d, momento: 'cierre', hora: timeStr(ahora), fecha: ahora.toISOString(),
       cajero: u.id, cajeroNombre: u.nombre, contado, conteo, dispNombre: Store.meta.deviceName || '',
-      esperado: c.esperado, diferencia: contado - c.esperado, abrio: c.abrio, sinApertura: !c.hayApertura,
+      esperado: c.esperado, diferencia: contado - c.esperado, abrio: c.abrio, sinApertura: !c.hayApertura, antes: c.antes,
       ventasEf: c.ventasEf, cobrosEf: c.cobrosEf, gastosEf: c.gastosEf, retirosEf: c.retirosEf, deja: null, saca: null, dejaConteo: null
     });
     render();
@@ -1951,11 +1995,67 @@ const A = {
   kpCerrar() { KP.close(); }
 };
 
-async function guardarCaja(momento, dia, contado, conteo) {
+async function guardarCaja(momento, dia, contado, conteo, alMomento) {
   const u = yo(), ahora = new Date();
-  await Store.save('caja', { id: 'caja-' + dia + '-' + momento, dia, momento, hora: timeStr(ahora), fecha: ahora.toISOString(), cajero: u.id, cajeroNombre: u.nombre, contado, conteo: conteo || null, dispNombre: Store.meta.deviceName || '' });
+  const datos = { id: 'caja-' + dia + '-' + momento, dia, momento, hora: timeStr(ahora), fecha: ahora.toISOString(), cajero: u.id, cajeroNombre: u.nombre, contado, conteo: conteo || null, dispNombre: Store.meta.deviceName || '' };
+  if (momento === 'apertura') datos.alMomento = !!alMomento;
+  await Store.save('caja', datos);
+  const seguir = ui.ventaPendiente && momento === 'apertura' && dia === hoy();
+  ui.ventaPendiente = false;
   Sheet.close(); render();
+  if (seguir) { await A.guardarVenta(); return; }
   flash(momento === 'apertura' ? 'Caja abierta' : 'Caja cerrada', money(contado));
+}
+
+/* Aviso de novedades: sale una vez a cada persona en cada equipo, solo hasta la fecha indicada. */
+const NOVEDAD = { id: 'caja-2.1', hasta: '2026-10-13' };
+function avisoNovedad() {
+  const u = yo();
+  if (!u || !Store.meta.listo || hoy() > NOVEDAD.hasta || $('#sheet-root').innerHTML) return;
+  if ((Store.meta.avisos || {})[NOVEDAD.id + ':' + u.id]) return;
+  Sheet.open(head('Novedad en la caja', 'Hola, ' + esc(u.nombre) + '. Desde hoy:') +
+    '<ul class="novedad">' +
+    '<li><b>La primera venta del día no se guarda hasta abrir la caja.</b> La app te lo pide sola.</li>' +
+    '<li>Si ayer se dejó dinero en la caja, toca <b>«Hay lo mismo»</b> y listo.</li>' +
+    '<li>Si abres tarde, cuenta lo que hay en ese momento. La app no suma dos veces lo que ya se vendió.</li>' +
+    '</ul><div class="sh-actions"><button class="btn go xl" data-a="novedadVista">Entendido</button></div>');
+}
+
+/* Versión nueva de la app: se recarga sola cuando nadie está a mitad de algo. */
+let recargaPendiente = false;
+function recargarSiSeguro() {
+  if (!recargaPendiente) return;
+  const a = document.activeElement;
+  const ocupado = $('#sheet-root').innerHTML || $('#kp-root').innerHTML || Sync.busy ||
+    Object.keys(ui.cart).some(k => n0(ui.cart[k]) > 0) || (a && /INPUT|TEXTAREA|SELECT/.test(a.tagName));
+  if (ocupado) { setTimeout(recargarSiSeguro, 3000); return; }
+  recargaPendiente = false;
+  location.reload();
+}
+
+/* Espera a que termine una sincronización corta; devuelve false si no hubo respuesta a tiempo. */
+async function syncCorto(ms) {
+  const fin = Date.now() + ms, pausa = t => new Promise(r => setTimeout(r, t));
+  while (Sync.busy && Date.now() < fin) await pausa(250);
+  if (Sync.busy) return false;
+  return Promise.race([Sync.run({ forzar: true }), pausa(Math.max(0, fin - Date.now())).then(() => false)]);
+}
+
+/* Primera venta del día sin caja abierta: se revisa la hoja y, si nadie la abrió, se pide abrirla. */
+async function pedirApertura() {
+  const dia = hoy();
+  let otro = false;
+  if (Sync.configurado()) {
+    if (navigator.onLine) {
+      toast('Revisando si ya se abrió la caja…');
+      const ok = await syncCorto(8000);
+      if (cajaDe(dia, 'apertura')) { $('#toast').className = ''; return A.guardarVenta(); }
+      otro = !ok;
+    } else otro = true;
+  }
+  $('#toast').className = '';
+  ui.ventaPendiente = true;
+  formConteo('apertura', dia, { antesDeVender: true, otro });
 }
 function leerConteoDen() {
   let t = 0;
@@ -2343,9 +2443,15 @@ async function arrancar() {
   ui.user = ult && !ult.pin ? ult.id : null;
   await Store.podar();
   render();
+  avisoNovedad();
   if (Sync.configurado()) Sync.soon(500);
   if (!VISTA_PREVIA && 'serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    const habiaVersion = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (habiaVersion) { recargaPendiente = true; recargarSiSeguro(); } });
+    navigator.serviceWorker.register('sw.js').then(reg => {
+      // Al volver a la app, mirar si hay versión nueva.
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+    }).catch(() => {});
   }
 }
 arrancar().catch(e => { $('#app').innerHTML = '<div class="setup"><h1>No se pudo abrir</h1><p>' + esc(e.message) + '</p></div>'; });
