@@ -1,6 +1,6 @@
 // Guarda la app en el teléfono para que abra sin internet.
 // Al publicar una versión nueva, cambia el número de CACHE.
-const CACHE = 'panaderia-v2.1.0';
+const CACHE = 'panaderia-v2.2.0';
 const FUENTES = 'panaderia-fuentes';
 const BASE = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
